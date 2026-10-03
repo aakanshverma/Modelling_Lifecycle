@@ -1,7 +1,7 @@
 # NBFC Customer Lifecycle Modelling — Plan
 
-Status: **Phase 1 and Phase 2 executed, verified, and committed.** Phase 3
-and Phase 4 have not started.
+Status: **Phase 1, Phase 2, and Phase 3 executed, verified, and
+committed.** Phase 4 has not started.
 
 ## The framework
 
@@ -94,6 +94,20 @@ actually changes the outcome."
   low-margin products.
 - Risk-adjusted offer sizing/pricing tied back to the current Behavioral
   score.
+
+**Status: done.** A randomized collections-contact experiment with a
+genuine heterogeneous treatment effect (persuadables, sleeping dogs) was
+simulated; the average treatment effect alone is small/unremarkable
+(~1-2pp), but a T-learner uplift model recovers the heterogeneity
+underneath (0.80 Spearman correlation with ground truth; quantile
+segments cleanly separate persuadable from sleeping-dog accounts). The
+cross-sell catalog was expanded to 3 products (top-up loan, credit card,
+insurance) each appealing to a different profile by design; NBO ranking
+by expected value (propensity x margin x CLV) differentiates the catalog
+sensibly instead of collapsing onto one product, and a risk-adjusted
+offer-sizing function ties the top-up-loan amount back to the current
+behavioral PD. See `scripts/run_uplift_demo.py`,
+`scripts/run_next_best_offer_demo.py`, and `tests/test_phase3.py`.
 
 ### Phase 4 — Production concerns
 **Goal:** what's needed to actually run this against a live portfolio.

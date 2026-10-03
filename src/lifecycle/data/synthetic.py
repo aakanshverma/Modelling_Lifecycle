@@ -176,22 +176,77 @@ def generate_onbook_behavior(booked: pd.DataFrame, seed: int = 43) -> pd.DataFra
     return booked.merge(behavior, on="applicant_id")
 
 
+def _collections_baseline_latent(df: pd.DataFrame) -> np.ndarray:
+    return (
+        -0.07 * df["max_dpd_last_3m"]
+        - 0.45 * df["num_bounces_last_6m"]
+        + 3.5 * (df["payment_to_due_ratio"] - 0.8)
+        + 0.01 * (df["bureau_refresh_score"] - 650)
+    ).to_numpy()
+
+
 def generate_collections_outcomes(collections_pop: pd.DataFrame, seed: int = 44) -> pd.DataFrame:
     """For behaviorally-bad accounts: did the account self-cure without hard collections?"""
     rng = np.random.default_rng(seed)
     n = len(collections_pop)
 
-    latent = (
-        -0.07 * collections_pop["max_dpd_last_3m"]
-        - 0.45 * collections_pop["num_bounces_last_6m"]
-        + 3.5 * (collections_pop["payment_to_due_ratio"] - 0.8)
-        + 0.01 * (collections_pop["bureau_refresh_score"] - 650)
-        + rng.normal(0, 0.5, n)
-    )
+    latent = _collections_baseline_latent(collections_pop) + rng.normal(0, 0.5, n)
     cure_prob = _sigmoid(latent + 0.3)
     self_cure_flag = rng.binomial(1, cure_prob)
 
     out = collections_pop.copy()
+    out["self_cure_flag"] = self_cure_flag
+    return out
+
+
+def _collections_uplift_latent(df: pd.DataFrame) -> np.ndarray:
+    """True (noiseless) treatment effect of contacting an account — only computable
+    because this is synthetic data. Contact helps "persuadable" accounts hovering
+    near a near-cure payment ratio, does ~nothing for accounts that would cure or
+    stay bad regardless, and backfires on severely delinquent "sleeping dog"
+    accounts (aggressive contact triggers defensive/legal escalation instead of
+    payment).
+    """
+    persuadable_bump = 0.8 * np.exp(-((df["payment_to_due_ratio"] - 0.80) ** 2) / 0.0025)
+    sleeping_dog_penalty = 0.3 * np.clip(df["max_dpd_last_3m"] - 1.0, 0, None)
+    return (persuadable_bump - sleeping_dog_penalty).to_numpy()
+
+
+def true_collections_uplift(df: pd.DataFrame) -> pd.Series:
+    """Ground-truth P(cure | contacted) - P(cure | not contacted), noiseless.
+
+    Only available here because the data is synthetic — this is the benchmark an
+    uplift model's predicted ranking is validated against, the same role the
+    oracle model plays for reject inference.
+    """
+    baseline = _collections_baseline_latent(df)
+    uplift = _collections_uplift_latent(df)
+    p_treated = _sigmoid(baseline + uplift + 0.3)
+    p_control = _sigmoid(baseline + 0.3)
+    return pd.Series(p_treated - p_control, index=df.index, name="true_uplift")
+
+
+def generate_collections_experiment(
+    collections_pop: pd.DataFrame, treatment_rate: float = 0.5, seed: int = 46
+) -> pd.DataFrame:
+    """Randomized-contact experiment on the collections segment.
+
+    This is what an uplift model is trained on in production: a genuine
+    randomized (or quasi-randomized) contact test with an observed outcome,
+    not just an observational self-cure rate. `contacted` is the randomized
+    treatment; `self_cure_flag` is the outcome under that treatment.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(collections_pop)
+    contacted = rng.binomial(1, treatment_rate, n)
+
+    baseline_latent = _collections_baseline_latent(collections_pop)
+    uplift_latent = _collections_uplift_latent(collections_pop)
+    latent = baseline_latent + contacted * uplift_latent + rng.normal(0, 0.5, n)
+    self_cure_flag = rng.binomial(1, _sigmoid(latent + 0.3))
+
+    out = collections_pop.copy()
+    out["contacted"] = contacted
     out["self_cure_flag"] = self_cure_flag
     return out
 
@@ -214,4 +269,51 @@ def generate_cross_sell_outcomes(cross_sell_pop: pd.DataFrame, seed: int = 45) -
 
     out = cross_sell_pop.copy()
     out["accepted_cross_sell"] = accepted_cross_sell
+    return out
+
+
+def generate_nbo_outcomes(cross_sell_pop: pd.DataFrame, seed: int = 47) -> pd.DataFrame:
+    """Acceptance outcome for each product in the Next-Best-Offer catalog.
+
+    Each product is deliberately built to appeal to a different customer
+    profile: a top-up loan to higher-income, low-utilization, longer-tenure
+    customers (the same signal as the single-product cross-sell model);
+    a credit card to younger, higher-utilization-comfort customers; loan
+    protection insurance to customers with a bigger loan and a higher
+    existing EMI burden. Ranking by raw acceptance propensity alone would
+    pick the wrong product for a given customer — NBO has to weigh it
+    against expected value.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(cross_sell_pop)
+    out = cross_sell_pop.copy()
+
+    latent_top_up = (
+        0.00001 * cross_sell_pop["monthly_income"]
+        + 0.02 * cross_sell_pop["months_on_book"]
+        - 2.5 * cross_sell_pop["credit_utilization"]
+        + 0.008 * (cross_sell_pop["bureau_refresh_score"] - 650)
+        - 2.0 * cross_sell_pop["existing_emi_to_income"]
+        + rng.normal(0, 0.5, n)
+    )
+    out["accept_top_up_loan"] = rng.binomial(1, _sigmoid(latent_top_up - 1.2))
+
+    latent_credit_card = (
+        -0.05 * (cross_sell_pop["age"] - 30)
+        + 0.000006 * cross_sell_pop["monthly_income"]
+        + 1.2 * cross_sell_pop["credit_utilization"]
+        - 1.0 * cross_sell_pop["existing_emi_to_income"]
+        + rng.normal(0, 0.5, n)
+    )
+    out["accept_credit_card"] = rng.binomial(1, _sigmoid(latent_credit_card - 0.6))
+
+    latent_insurance = (
+        0.000004 * cross_sell_pop["loan_amount_requested"]
+        + 2.4 * cross_sell_pop["existing_emi_to_income"]
+        + 0.008 * (cross_sell_pop["bureau_refresh_score"] - 650)
+        + 0.025 * (cross_sell_pop["age"] - 30)
+        + rng.normal(0, 0.4, n)
+    )
+    out["accept_insurance"] = rng.binomial(1, _sigmoid(latent_insurance - 1.5))
+
     return out

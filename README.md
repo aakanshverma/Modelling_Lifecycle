@@ -53,12 +53,15 @@ src/lifecycle/
   scoring/scorecard.py      generic logistic-regression -> points scorecard (the "champion")
   scoring/challenger.py     XGBoost challenger + SHAP explainability, benchmarked vs. the champion
   scoring/reject_inference.py   parceling-based reject inference for the acquisition scorecard
+  scoring/uplift.py         T-learner uplift model for the Collections contact decision
   analytics/roll_rate.py   DPD transition matrix + vintage curve analysis
+  analytics/clv.py          heuristic Customer Lifetime Value estimate
   monitoring/psi.py         Population Stability Index score-drift monitor
   stages/acquisition.py    Stage A: approve/refer/reject at origination
   stages/behavioral.py     Stage B: routes booked customers to collections/cross-sell
   stages/collections.py    Stage C: self-cure propensity -> collections strategy
-  stages/cross_sell.py     Stage D: offer-acceptance propensity -> offer tier
+  stages/cross_sell.py     Stage D: offer-acceptance propensity -> offer tier (single product)
+  stages/next_best_offer.py   Stage D, upgraded: multi-product NBO ranking weighted by CLV
   orchestrator.py          wires the four stages into one customer journey
 scripts/
   run_lifecycle_demo.py           Phase 1: end-to-end ABCD chain, prints a summary
@@ -66,9 +69,12 @@ scripts/
   run_roll_rate_demo.py           Phase 2: roll-rate matrix + vintage curve by score band
   run_challenger_demo.py          Phase 2: XGBoost challenger vs champion, all 4 stages
   run_psi_monitoring_demo.py      Phase 2: PSI catching a simulated score drift
+  run_uplift_demo.py              Phase 3: uplift model vs. ground-truth treatment effect
+  run_next_best_offer_demo.py     Phase 3: NBO ranking across the cross-sell catalog
 tests/
   test_pipeline.py   Phase 1 smoke tests: pipeline runs, each stage learns signal
   test_phase2.py      Phase 2 tests: reject inference, roll-rate invariants, challenger, PSI
+  test_phase3.py      Phase 3 tests: uplift ranking/segments, NBO catalog differentiation
 ```
 
 ## Running it
@@ -82,9 +88,10 @@ This generates 20,000 synthetic applicants, runs them through all four
 stages, prints a summary at each stage (decision counts, train AUC), and
 writes the full per-customer journey to `lifecycle_journey.csv`.
 
-The Phase 2 scripts each stand alone and print their own report:
-`run_reject_inference_demo.py`, `run_roll_rate_demo.py`,
-`run_challenger_demo.py`, `run_psi_monitoring_demo.py`.
+The Phase 2 and Phase 3 scripts each stand alone and print their own
+report: `run_reject_inference_demo.py`, `run_roll_rate_demo.py`,
+`run_challenger_demo.py`, `run_psi_monitoring_demo.py`,
+`run_uplift_demo.py`, `run_next_best_offer_demo.py`.
 
 Run the tests with:
 
@@ -122,6 +129,33 @@ pytest
   a simulated mild downturn (utilization and EMI burden both up) scores
   PSI ≈ 0.18 (moderate drift) — the standard signal that a scorecard needs
   to be revisited.
+
+## Phase 3 — moving the fork from "propensity" to "what changes the outcome"
+
+- **Uplift modeling for Collections** (`data/synthetic.generate_collections_experiment`,
+  `scoring/uplift.py`): simulates a randomized contact experiment with a
+  *heterogeneous* treatment effect — contact helps "persuadable" accounts
+  near a borderline payment ratio, does nothing for accounts that would
+  cure or stay bad regardless, and backfires on severely delinquent
+  "sleeping dog" accounts. The average treatment effect alone looks small
+  and unremarkable (~1-2pp) — exactly why a blanket "does contact help"
+  read is misleading. A T-learner uplift model recovers the real
+  heterogeneity underneath: its predicted ranking correlates ~0.8
+  (Spearman) with the ground-truth effect, and quantile-based segments
+  (`assign_uplift_segment`) separate a clearly-positive-uplift
+  "persuadable" segment from a clearly-negative-uplift "sleeping dog"
+  segment that a propensity-only score can't tell apart.
+- **Next-Best-Offer + CLV for Cross-sell** (`data/synthetic.generate_nbo_outcomes`,
+  `analytics/clv.py`, `stages/next_best_offer.py`): expands the single
+  top-up-loan propensity model into a 3-product catalog (top-up loan,
+  credit card, insurance), each appealing to a different customer profile
+  by design. Ranking by expected value (acceptance propensity x margin x
+  CLV) differentiates the catalog sensibly — e.g. credit card skews
+  recommended to younger customers, insurance to customers with a heavier
+  EMI burden — rather than collapsing onto whichever product has the
+  highest fixed margin. `risk_adjusted_offer_amount` also ties the
+  top-up-loan offer size back to the current behavioral PD, instead of
+  sizing every approved cross-sell customer identically.
 
 ## Plugging in real data
 
