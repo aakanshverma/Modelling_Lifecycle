@@ -87,6 +87,23 @@ def generate_dpd_panel(
     return pd.concat(rows, ignore_index=True)
 
 
+def _applicant_risk_latent(cibil_score, dpd_30_plus_6m, credit_utilization, existing_emi_to_income, vintage_months):
+    """Deterministic (noiseless) part of the applicant default-risk latent.
+
+    Shared between `generate_applicants` (which adds its own noise before
+    drawing `default_flag`) and `generate_alt_data_features` (which uses it
+    to build alternative-data features that are genuine, if noisy, proxies
+    for the same underlying risk — not an independently-invented signal).
+    """
+    return (
+        -0.012 * (cibil_score - 650)
+        + 0.55 * dpd_30_plus_6m
+        + 2.0 * credit_utilization
+        + 2.5 * existing_emi_to_income
+        - 0.004 * vintage_months
+    )
+
+
 def generate_applicants(n: int = 20_000, seed: int = 42) -> pd.DataFrame:
     """Day-0 applicant pool: bureau (CIBIL-style) + application fields.
 
@@ -104,14 +121,9 @@ def generate_applicants(n: int = 20_000, seed: int = 42) -> pd.DataFrame:
     existing_emi_to_income = rng.beta(2, 6, n)
     age = rng.normal(38, 10, n).clip(21, 65)
 
-    latent = (
-        -0.012 * (cibil_score - 650)
-        + 0.55 * dpd_30_plus_6m
-        + 2.0 * credit_utilization
-        + 2.5 * existing_emi_to_income
-        - 0.004 * vintage_months
-        + rng.normal(0, 0.8, n)
-    )
+    latent = _applicant_risk_latent(
+        cibil_score, dpd_30_plus_6m, credit_utilization, existing_emi_to_income, vintage_months
+    ) + rng.normal(0, 0.8, n)
     default_prob = _sigmoid(latent - 3.3)
     default_flag = rng.binomial(1, default_prob)
 
@@ -239,16 +251,37 @@ def generate_collections_experiment(
     rng = np.random.default_rng(seed)
     n = len(collections_pop)
     contacted = rng.binomial(1, treatment_rate, n)
-
-    baseline_latent = _collections_baseline_latent(collections_pop)
-    uplift_latent = _collections_uplift_latent(collections_pop)
-    latent = baseline_latent + contacted * uplift_latent + rng.normal(0, 0.5, n)
-    self_cure_flag = rng.binomial(1, _sigmoid(latent + 0.3))
+    self_cure_flag = _collections_self_cure_outcome(collections_pop, contacted, seed=seed + 1)
 
     out = collections_pop.copy()
     out["contacted"] = contacted
     out["self_cure_flag"] = self_cure_flag
     return out
+
+
+def _collections_self_cure_outcome(df: pd.DataFrame, contacted: np.ndarray, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    n = len(df)
+    latent = (
+        _collections_baseline_latent(df)
+        + contacted * _collections_uplift_latent(df)
+        + rng.normal(0, 0.5, n)
+    )
+    return rng.binomial(1, _sigmoid(latent + 0.3))
+
+
+def simulate_collections_policy_outcome(
+    collections_pop: pd.DataFrame, contacted: pd.Series, seed: int = 46
+) -> pd.Series:
+    """Simulate the self-cure outcome under an arbitrary contact policy (which
+    customers get contacted), using the same generative model as
+    `generate_collections_experiment`. Lets you compare hypothetical policies
+    (contact-all, contact-none, model-targeted) on a like-for-like basis before
+    committing to a real pilot — exactly the kind of counterfactual check only
+    possible because the data is synthetic.
+    """
+    self_cure_flag = _collections_self_cure_outcome(collections_pop, contacted.to_numpy(), seed=seed)
+    return pd.Series(self_cure_flag, index=collections_pop.index, name="self_cure_flag")
 
 
 def generate_cross_sell_outcomes(cross_sell_pop: pd.DataFrame, seed: int = 45) -> pd.DataFrame:
@@ -316,4 +349,68 @@ def generate_nbo_outcomes(cross_sell_pop: pd.DataFrame, seed: int = 47) -> pd.Da
     )
     out["accept_insurance"] = rng.binomial(1, _sigmoid(latent_insurance - 1.5))
 
+    return out
+
+
+def generate_alt_data_features(applicants: pd.DataFrame, seed: int = 48) -> pd.DataFrame:
+    """Synthetic alternative-data features standing in for an Account-Aggregator-style
+    pull (UPI transaction history, utility bill payment).
+
+    Deliberately built to carry a strong, low-noise signal for "thin-file"
+    applicants (low bureau vintage or few trade lines) and a weak, noisy
+    signal for "thick-file" applicants — because that's the actual
+    real-world case for blending in alternative data: bureau history is
+    sparse for exactly the segment alt data is meant to help, and bureau
+    data already captures most of what alt data would add for everyone
+    else. The signal itself is a genuine (if noisy) proxy for the same
+    underlying default risk driving `default_flag`, not an independently
+    invented one.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(applicants)
+
+    risk_latent = _applicant_risk_latent(
+        applicants["cibil_score"],
+        applicants["dpd_30_plus_last_6m"],
+        applicants["credit_utilization"],
+        applicants["existing_emi_to_income"],
+        applicants["bureau_vintage_months"],
+    ).to_numpy()
+
+    thin_file = ((applicants["bureau_vintage_months"] < 24) | (applicants["num_trades"] < 2)).to_numpy()
+    noise_scale = np.where(thin_file, 0.5, 3.0)
+    # Higher alt_signal = financially healthier (lower risk).
+    alt_signal = -risk_latent + rng.normal(0, 1, n) * noise_scale
+
+    out = pd.DataFrame({"applicant_id": applicants["applicant_id"].to_numpy()})
+    out["upi_avg_monthly_inflow"] = (
+        applicants["monthly_income"].to_numpy() * (0.75 + 0.12 * alt_signal) + rng.normal(0, 2_000, n)
+    ).clip(0, None).round(0)
+    out["upi_bounce_rate"] = (_sigmoid(-1.5 * alt_signal + rng.normal(0, 0.3, n)) * 0.3).round(3)
+    out["utility_ontime_payment_rate"] = _sigmoid(1.2 * alt_signal + rng.normal(0, 0.3, n)).round(3)
+    out["thin_file"] = thin_file
+    return out
+
+
+def degrade_bureau_for_thin_file(
+    applicants: pd.DataFrame, noise_std: float = 150.0, seed: int = 49
+) -> pd.DataFrame:
+    """Simulate what a bureau pull actually looks like for a thin-file applicant.
+
+    A `cibil_score` computed from very little trade history is more
+    volatile and less reliable than the same score for a thick-file
+    applicant with years of repayment history — that unreliability is the
+    real-world reason alternative data is worth pulling in the first
+    place. Returns a copy of `applicants` with `cibil_score` perturbed
+    accordingly for thin-file rows only; this is the "what the acquisition
+    team actually observes" view, as opposed to the noiseless `cibil_score`
+    used elsewhere in this repo to define ground-truth risk.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(applicants)
+    thin_file = (applicants["bureau_vintage_months"] < 24) | (applicants["num_trades"] < 2)
+    extra_noise = np.where(thin_file, rng.normal(0, noise_std, n), 0.0)
+
+    out = applicants.copy()
+    out["cibil_score"] = (out["cibil_score"] + extra_noise).clip(300, 900)
     return out

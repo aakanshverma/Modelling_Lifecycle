@@ -57,7 +57,8 @@ src/lifecycle/
   analytics/roll_rate.py   DPD transition matrix + vintage curve analysis
   analytics/clv.py          heuristic Customer Lifetime Value estimate
   monitoring/psi.py         Population Stability Index score-drift monitor
-  stages/acquisition.py    Stage A: approve/refer/reject at origination
+  experimentation/ab_test.py   generic champion/challenger A/B significance test
+  stages/acquisition.py    Stage A: approve/refer/reject at origination (+ alt-data variant)
   stages/behavioral.py     Stage B: routes booked customers to collections/cross-sell
   stages/collections.py    Stage C: self-cure propensity -> collections strategy
   stages/cross_sell.py     Stage D: offer-acceptance propensity -> offer tier (single product)
@@ -71,10 +72,14 @@ scripts/
   run_psi_monitoring_demo.py      Phase 2: PSI catching a simulated score drift
   run_uplift_demo.py              Phase 3: uplift model vs. ground-truth treatment effect
   run_next_best_offer_demo.py     Phase 3: NBO ranking across the cross-sell catalog
+  run_ab_test_demo.py             Phase 4: champion/challenger rollout test (blanket vs targeted)
+  run_altdata_demo.py             Phase 4: alt-data AUC lift concentrated in thin-file segment
 tests/
   test_pipeline.py   Phase 1 smoke tests: pipeline runs, each stage learns signal
   test_phase2.py      Phase 2 tests: reject inference, roll-rate invariants, challenger, PSI
   test_phase3.py      Phase 3 tests: uplift ranking/segments, NBO catalog differentiation
+  test_phase4.py      Phase 4 tests: A/B significance, targeted-policy tradeoff, alt-data lift
+GOVERNANCE.md         model inventory, validation/monitoring cadence, RBI alignment
 ```
 
 ## Running it
@@ -88,10 +93,11 @@ This generates 20,000 synthetic applicants, runs them through all four
 stages, prints a summary at each stage (decision counts, train AUC), and
 writes the full per-customer journey to `lifecycle_journey.csv`.
 
-The Phase 2 and Phase 3 scripts each stand alone and print their own
-report: `run_reject_inference_demo.py`, `run_roll_rate_demo.py`,
+The Phase 2–4 scripts each stand alone and print their own report:
+`run_reject_inference_demo.py`, `run_roll_rate_demo.py`,
 `run_challenger_demo.py`, `run_psi_monitoring_demo.py`,
-`run_uplift_demo.py`, `run_next_best_offer_demo.py`.
+`run_uplift_demo.py`, `run_next_best_offer_demo.py`,
+`run_ab_test_demo.py`, `run_altdata_demo.py`.
 
 Run the tests with:
 
@@ -156,6 +162,35 @@ pytest
   highest fixed margin. `risk_adjusted_offer_amount` also ties the
   top-up-loan offer size back to the current behavioral PD, instead of
   sizing every approved cross-sell customer identically.
+
+## Phase 4 — production concerns
+
+- **Champion/challenger A/B testing** (`experimentation/ab_test.py`): a
+  generic, reusable significance test (Welch's t-test on a champion vs.
+  challenger arm) — the mechanism for actually changing a live policy
+  rather than just picking the better backtest number.
+  `run_ab_test_demo.py` uses it to evaluate retiring Collections'
+  "contact everyone" policy in favor of the Phase 3 uplift-targeted one:
+  on a fresh randomized split, the targeted policy cuts contact volume by
+  ~80% while giving up only ~2% relative cure rate — roughly 5x more
+  cures per contact made. That's the actual rollout decision a risk team
+  would weigh, not an abstract AUC number.
+- **Alternative data for thin-file applicants**
+  (`data/synthetic.generate_alt_data_features`,
+  `degrade_bureau_for_thin_file`, `stages/acquisition.fit_with_altdata`):
+  simulates bureau data being noisier/less reliable for applicants with
+  little trade history (the real-world reason alternative data, e.g. an
+  Account-Aggregator UPI/utility-bill pull, is worth the integration
+  cost), and blends it in alongside bureau features. The resulting AUC
+  lift is concentrated exactly where it should be — +1.6 points for the
+  thin-file segment, ~0 for thick-file, where bureau data already
+  captures what alt data would add.
+- **Model governance** (`GOVERNANCE.md`): the model inventory, validation
+  approach, PSI-driven monitoring cadence, approval workflow, and RBI
+  digital-lending alignment (explainability, Fair Practice Code, consent
+  for alternative-data pulls, non-discrimination) that ties the rest of
+  this repo to what an actual model risk committee would require before
+  letting any of it touch a live portfolio.
 
 ## Plugging in real data
 

@@ -1,7 +1,6 @@
 # NBFC Customer Lifecycle Modelling — Plan
 
-Status: **Phase 1, Phase 2, and Phase 3 executed, verified, and
-committed.** Phase 4 has not started.
+Status: **All four phases executed, verified, and committed.**
 
 ## The framework
 
@@ -120,23 +119,42 @@ behavioral PD. See `scripts/run_uplift_demo.py`,
   utility bills, GST data for MSME) for thin-file/new-to-credit segments —
   if such data sources are available.
 
-## Open decisions (need your input before Phase 1 is finalized)
+**Status: done.** Built a generic, reusable champion/challenger A/B
+significance test (`experimentation/ab_test.py`) and used it to evaluate
+retiring Collections' blanket "contact everyone" policy for the Phase 3
+uplift-targeted one: on a fresh randomized split, the targeted policy
+cuts contact volume ~80% while giving up only ~2% relative cure rate
+(~5x more cures per contact). Simulated bureau data being noisier for
+thin-file applicants and blended in alternative-data features
+(`generate_alt_data_features`, `fit_with_altdata`); the resulting AUC
+lift is concentrated exactly where it should be (+1.6 points thin-file,
+~0 thick-file). Wrote `GOVERNANCE.md` covering the model inventory,
+validation approach, PSI-driven monitoring cadence, approval workflow,
+and RBI digital-lending alignment. See `scripts/run_ab_test_demo.py`,
+`scripts/run_altdata_demo.py`, and `tests/test_phase4.py`.
 
-1. **Data**: stay on synthetic data for now, or point this at a real
-   bureau/on-book extract? If real, what's the source and what fields are
-   actually available?
-2. **Scope**: execute Phase 1 only, or commit now to also doing Phase 2/3
-   enhancements before calling it "built"?
-3. **Stack**: Python + scikit-learn (as scaffolded) assumed fine — flag if
-   a different tool/language is required (e.g. SAS, R, a specific MLOps
-   platform already in use).
-4. **Fork logic**: confirm the Behavioral-score cutoff deciding
-   Collections vs. Cross-sell should be a simple threshold (as scaffolded)
-   or needs additional business rules (e.g. minimum vintage, product
-   eligibility).
+## Open decisions (resolved along the way)
+
+1. **Data**: stayed on synthetic data throughout — no real bureau/on-book
+   extract was provided. Every generator is isolated in
+   `data/synthetic.py` specifically so a real extract can replace it
+   without touching model code (see "Plugging in real data" in the
+   README).
+2. **Scope**: all four phases were executed, not just Phase 1.
+3. **Stack**: Python + scikit-learn/XGBoost/SHAP/scipy, as scaffolded —
+   no objection was raised to change it.
+4. **Fork logic**: the Behavioral-score cutoff deciding Collections vs.
+   Cross-sell stayed a simple threshold; no additional business rules
+   were requested.
 
 ## Next step
 
-Nothing executes past this document until you say go. On approval, the
-plan is: review/finalize the Phase 1 scaffold already in the working tree,
-run it, verify output, then commit the working code as its own change.
+All 4 phases are built, tested (19 tests across `tests/test_pipeline.py`
+and `tests/test_phase{2,3,4}.py`), and pushed. What's left is entirely
+about moving from "synthetic reference implementation" to "running
+against your real portfolio": plugging in real bureau/on-book/alt-data
+extracts, standing up the model risk committee process `GOVERNANCE.md`
+describes, and deciding whether any Phase 2–4 enhancement (challenger
+model, uplift targeting, NBO, alt data) is worth the added operational
+complexity for your actual book — that's a business call, not a
+modeling one.

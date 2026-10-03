@@ -20,9 +20,19 @@ FEATURES = [
 ]
 TARGET = "default_flag"
 
+# Phase 4: bureau features plus alternative-data features (UPI/utility-bill proxies —
+# see data/synthetic.generate_alt_data_features), used for the thin-file lift comparison.
+ALT_FEATURES = FEATURES + ["upi_avg_monthly_inflow", "upi_bounce_rate", "utility_ontime_payment_rate"]
+
 
 def fit(applicants: pd.DataFrame) -> ScorecardModel:
     return fit_scorecard("acquisition", applicants[FEATURES], applicants[TARGET])
+
+
+def fit_with_altdata(applicants: pd.DataFrame) -> ScorecardModel:
+    """Same target, bureau features plus alternative-data features. `applicants` must
+    already have the alt-data columns merged in (see generate_alt_data_features)."""
+    return fit_scorecard("acquisition_altdata", applicants[ALT_FEATURES], applicants[TARGET])
 
 
 def score(model: ScorecardModel, applicants: pd.DataFrame) -> pd.DataFrame:
