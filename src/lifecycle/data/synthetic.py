@@ -14,6 +14,79 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1 / (1 + np.exp(-x))
 
 
+# DPD bucket ordering used by the monthly panel, roll-rate matrix, and vintage curves.
+DPD_BUCKETS = ["current", "dpd_1_30", "dpd_31_60", "dpd_61_90", "npa_90_plus"]
+
+# Month-over-month transition matrices for the best- and worst-risk customers; every
+# real customer's matrix is a severity-weighted blend of the two (see generate_dpd_panel).
+# npa_90_plus is treated as absorbing: once written off as NPA, an account stays there.
+_BEST_TRANSITION = np.array(
+    [
+        [0.93, 0.07, 0.00, 0.00, 0.00],
+        [0.55, 0.30, 0.15, 0.00, 0.00],
+        [0.25, 0.35, 0.25, 0.15, 0.00],
+        [0.15, 0.20, 0.25, 0.25, 0.15],
+        [0.00, 0.00, 0.00, 0.00, 1.00],
+    ]
+)
+_WORST_TRANSITION = np.array(
+    [
+        [0.80, 0.20, 0.00, 0.00, 0.00],
+        [0.20, 0.35, 0.35, 0.10, 0.00],
+        [0.05, 0.15, 0.30, 0.35, 0.15],
+        [0.02, 0.05, 0.13, 0.30, 0.50],
+        [0.00, 0.00, 0.00, 0.00, 1.00],
+    ]
+)
+
+
+def generate_dpd_panel(
+    customers: pd.DataFrame, risk_col: str, n_months: int = 12, seed: int = 50
+) -> pd.DataFrame:
+    """Simulate a monthly DPD-bucket panel for booked customers via a severity-blended Markov chain.
+
+    `risk_col` is any column where a higher value means higher risk (e.g. an
+    acquisition PD) — customers are ranked on it to blend between the best-
+    and worst-case transition matrices. Returns a long panel of
+    (applicant_id, month_on_book, dpd_bucket), everyone starting 'current'
+    in the month they're booked.
+    """
+    rng = np.random.default_rng(seed)
+    severity = customers[risk_col].rank(pct=True).to_numpy()
+    applicant_ids = customers["applicant_id"].to_numpy()
+    state = np.zeros(len(customers), dtype=int)
+
+    rows = []
+    for month in range(1, n_months + 1):
+        # Transition everyone off a single snapshot of this month's starting state —
+        # updating `state` in place while iterating buckets would let a customer who
+        # just rolled into e.g. dpd_1_30 get re-processed again in the same month.
+        start_state = state.copy()
+        next_state = state.copy()
+        for bucket_idx in range(len(DPD_BUCKETS)):
+            mask = start_state == bucket_idx
+            if not mask.any():
+                continue
+            sev = severity[mask][:, None]
+            probs = (1 - sev) * _BEST_TRANSITION[bucket_idx] + sev * _WORST_TRANSITION[bucket_idx]
+            probs = probs / probs.sum(axis=1, keepdims=True)
+            cum_probs = np.cumsum(probs, axis=1)
+            draws = (rng.random((mask.sum(), 1)) < cum_probs).argmax(axis=1)
+            next_state[mask] = draws
+        state = next_state
+
+        rows.append(
+            pd.DataFrame(
+                {
+                    "applicant_id": applicant_ids,
+                    "month_on_book": month,
+                    "dpd_bucket": [DPD_BUCKETS[s] for s in state],
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
 def generate_applicants(n: int = 20_000, seed: int = 42) -> pd.DataFrame:
     """Day-0 applicant pool: bureau (CIBIL-style) + application fields.
 

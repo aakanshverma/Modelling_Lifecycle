@@ -1,8 +1,7 @@
 # NBFC Customer Lifecycle Modelling — Plan
 
-Status: **proposed, not executed.** Nothing beyond this document and an
-unreviewed Phase 1 code scaffold has been built. No stage below starts
-until it's explicitly approved.
+Status: **Phase 1 and Phase 2 executed, verified, and committed.** Phase 3
+and Phase 4 have not started.
 
 ## The framework
 
@@ -49,9 +48,12 @@ they've spent time with us, then fork into Collections or Cross-sell.
   journey output (decision + score at every stage).
 - A demo script + smoke tests.
 
-**Status:** already scaffolded in the working tree (uncommitted) — see
-`src/lifecycle/`, `scripts/run_lifecycle_demo.py`, `tests/`. Not yet
-reviewed, run, or committed as working code.
+**Status: done.** Verified end-to-end (tests pass, demo script runs on
+20k synthetic applicants) and committed. Along the way, fixed a
+calibration bug where the synthetic default rate was unrealistically high
+(43%), which pushed every applicant's score below the approve cutoff and
+left the booked population empty — recalibrated to a ~13% bad rate and
+re-tuned the acquisition cutoffs against the actual score distribution.
 
 ### Phase 2 — Make it industry-realistic
 **Goal:** close the gap between "demo" and "what a risk team would actually
@@ -69,6 +71,15 @@ ship."
   require the final decision to come from an interpretable model.
 - **PSI-based score monitoring** — detect when a live scorecard has
   drifted and needs refitting.
+
+**Status: done.** All four pieces implemented, validated, and tested:
+reject inference closes the AUC gap toward an oracle model (0.70 → 0.73
+toward 0.76 in one run), the DPD panel + vintage curve correctly show a
+lower acquisition score band reaching NPA faster, the XGBoost challenger
+edges out the champion on holdout AUC/KS across all 4 stages, and PSI
+correctly stays near 0 for a same-distribution cohort but flags ~0.18
+(moderate drift) after a simulated downturn. See `scripts/run_*_demo.py`
+and `tests/test_phase2.py`.
 
 ### Phase 3 — Make the fork smarter
 **Goal:** move Collections and Cross-sell from "propensity" to "what
