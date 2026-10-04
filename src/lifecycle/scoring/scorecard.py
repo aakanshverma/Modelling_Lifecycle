@@ -57,8 +57,16 @@ class ScorecardModel:
             },
             index=X.index,
         )
+        # Deciled on `pd` (ascending P(target=1)), not `score`. `score` is scaled so a
+        # HIGHER score means a LOWER P(target=1) — correct when target=1 is the bad
+        # outcome (Acquisition, Behavioral), but backwards when target=1 is the good
+        # outcome (Collections' self-cure, Cross-sell's acceptance). Deciling on `pd`
+        # directly is unambiguous either way: decile 9 always means "most likely to be
+        # the modeled outcome," which is what collections.strategy() and
+        # cross_sell.offer_tier() actually assume when they treat a high decile as
+        # "high propensity."
         result[f"{self.name}_decile"] = pd.qcut(
-            result[f"{self.name}_score"], 10, labels=False, duplicates="drop"
+            result[f"{self.name}_pd"], 10, labels=False, duplicates="drop"
         )
         return result
 

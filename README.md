@@ -74,11 +74,17 @@ scripts/
   run_next_best_offer_demo.py     Phase 3: NBO ranking across the cross-sell catalog
   run_ab_test_demo.py             Phase 4: champion/challenger rollout test (blanket vs targeted)
   run_altdata_demo.py             Phase 4: alt-data AUC lift concentrated in thin-file segment
+app/
+  Home.py              Overview: the funnel + stage AUCs
+  data_loader.py       st.cache_data layer over src/lifecycle — no modeling logic here
+  theme.py             fixed categorical/sequential/diverging color assignments
+  pages/               1_Acquisition.py .. 6_Governance.py, one per stage + Monitoring/Governance
 tests/
   test_pipeline.py   Phase 1 smoke tests: pipeline runs, each stage learns signal
   test_phase2.py      Phase 2 tests: reject inference, roll-rate invariants, challenger, PSI
   test_phase3.py      Phase 3 tests: uplift ranking/segments, NBO catalog differentiation
   test_phase4.py      Phase 4 tests: A/B significance, targeted-policy tradeoff, alt-data lift
+  test_app.py          Phase 5 tests: dashboard data-loader layer, incl. the decile-direction regression
 GOVERNANCE.md         model inventory, validation/monitoring cadence, RBI alignment
 ```
 
@@ -191,6 +197,37 @@ pytest
   for alternative-data pulls, non-discrimination) that ties the rest of
   this repo to what an actual model risk committee would require before
   letting any of it touch a live portfolio.
+
+## Phase 5 — dashboard
+
+```bash
+streamlit run app/Home.py
+```
+
+A multipage Streamlit dashboard (`app/`) presenting everything above as an
+actual UI instead of terminal output — the Overview funnel, and one page
+per stage (Acquisition, Behavioral, Collections, Cross-sell) plus
+Monitoring and Governance pages. `app/data_loader.py` is a thin,
+`st.cache_data`-wrapped layer over `src/lifecycle`; no modeling logic
+lives in the app itself. The Acquisition page's approve/refer cutoffs are
+live sliders that recompute the funnel instantly.
+
+Building this dashboard caught a real bug in the modeling code: the
+generic scorecard engine scales `score` assuming the model's target is a
+*bad* outcome (true for Acquisition's `default_flag` and Behavioral's
+`behavioral_bad_flag`), so a higher score means lower risk. But
+Collections' `self_cure_flag` and Cross-sell's `accepted_cross_sell` are
+*good* outcomes — feeding them through the same scaling silently inverted
+the score, which meant `collections.STRATEGY_BY_DECILE` and
+`cross_sell.OFFER_BY_DECILE` had been assigning the best-recovery-prospect
+accounts to aggressive field/legal action and the worst prospects to soft
+contact, backwards, since Phase 1. The dashboard's decile-validation chart
+(actual self-cure rate by score decile) made this immediately visible as a
+downward-sloping line where it should rise. Fixed at the root in
+`scoring/scorecard.py`: `_decile` is now built from `_pd` (which always
+correctly tracks P(target=1)) instead of from `_score` — see
+`tests/test_pipeline.py::test_decile_direction_matches_actual_propensity_for_good_outcome_targets`
+for the regression test.
 
 ## Plugging in real data
 

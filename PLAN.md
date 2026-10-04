@@ -1,6 +1,6 @@
 # NBFC Customer Lifecycle Modelling — Plan
 
-Status: **All four phases executed, verified, and committed.**
+Status: **All five phases executed, verified, and committed.**
 
 ## The framework
 
@@ -133,6 +133,60 @@ validation approach, PSI-driven monitoring cadence, approval workflow,
 and RBI digital-lending alignment. See `scripts/run_ab_test_demo.py`,
 `scripts/run_altdata_demo.py`, and `tests/test_phase4.py`.
 
+### Phase 5 — Front end
+**Goal:** everything so far only speaks through terminal output
+(`scripts/run_*_demo.py` print statements) and a CSV file. A risk team
+or stakeholder needs a dashboard they can actually look at, not a
+script they run and read off the console.
+
+- **Stack: Streamlit.** The repo is all-Python (pandas/sklearn/XGBoost),
+  the audience is a risk/analytics team, not web developers, and
+  Streamlit is the standard tool for exactly this — turning a Python
+  analytics pipeline into an interactive dashboard without a separate
+  frontend build. No framework debate needed; this is the default choice
+  for this kind of project.
+- **Multipage app** under `app/`, one page per part of the lifecycle,
+  all backed by the existing `src/lifecycle` library code (the dashboard
+  presents what's already built; it doesn't reimplement any modeling
+  logic):
+  - **Overview** — the funnel: applicants -> approve/refer/reject ->
+    booked -> behavioral route -> collections/cross-sell outcome, with
+    stage AUCs.
+  - **Acquisition** — score distribution by decision, champion vs.
+    challenger (AUC/KS + SHAP importances), reject inference
+    (baseline/augmented/oracle), alt-data lift (thin-file vs. thick-file).
+    Interactive approve/refer cutoff sliders recompute the funnel live.
+  - **Behavioral** — score distribution, routing split, roll-rate
+    transition-matrix heatmap, vintage curves by acquisition score band.
+  - **Collections** — self-cure propensity deciles, uplift model (true
+    uplift by predicted decile, persuadable/sleeping-dog segments), the
+    champion/challenger A/B test (blanket vs. targeted contact).
+  - **Cross-sell** — per-product acceptance AUCs, Next-Best-Offer
+    distribution and profile-by-offer, CLV distribution, risk-adjusted
+    offer sizing.
+  - **Monitoring** — PSI bin-level comparison (stable cohort vs.
+    simulated downturn), with the stable/moderate/significant drift
+    thresholds marked.
+  - **Governance** — the model inventory and PSI monitoring cadence from
+    `GOVERNANCE.md`, rendered rather than left in a file nobody opens.
+- Heavy computations (fitting 10+ models) are cached per Streamlit
+  session so navigating between pages doesn't refit everything.
+
+**Status: done.** All 7 pages built, verified by actually launching the
+app and checking each page renders with no exceptions (Playwright
+screenshots). Run with `streamlit run app/Home.py`.
+
+Building the Collections page's decile-validation chart caught a real,
+pre-existing bug: the generic scorecard engine scales `score` assuming
+the model's target is a *bad* outcome, which is backwards for
+Collections' `self_cure_flag` and Cross-sell's `accepted_cross_sell`
+(both *good* outcomes) — silently inverting `STRATEGY_BY_DECILE` and
+`OFFER_BY_DECILE` since Phase 1 (best recovery prospects were getting
+sent to field/legal, worst prospects to soft contact). Fixed at the root
+in `scoring/scorecard.py` (`_decile` now built from `_pd`, not `_score`)
+and covered by a regression test. See the README's "Phase 5 — dashboard"
+section for the full writeup.
+
 ## Open decisions (resolved along the way)
 
 1. **Data**: stayed on synthetic data throughout — no real bureau/on-book
@@ -140,17 +194,19 @@ and RBI digital-lending alignment. See `scripts/run_ab_test_demo.py`,
    `data/synthetic.py` specifically so a real extract can replace it
    without touching model code (see "Plugging in real data" in the
    README).
-2. **Scope**: all four phases were executed, not just Phase 1.
-3. **Stack**: Python + scikit-learn/XGBoost/SHAP/scipy, as scaffolded —
-   no objection was raised to change it.
+2. **Scope**: all five phases were executed, not just Phase 1.
+3. **Stack**: Python + scikit-learn/XGBoost/SHAP/scipy for the modeling,
+   Streamlit + Plotly for the dashboard — no objection was raised to
+   change either.
 4. **Fork logic**: the Behavioral-score cutoff deciding Collections vs.
    Cross-sell stayed a simple threshold; no additional business rules
    were requested.
 
 ## Next step
 
-All 4 phases are built, tested (19 tests across `tests/test_pipeline.py`
-and `tests/test_phase{2,3,4}.py`), and pushed. What's left is entirely
+All 5 phases are built, tested (26 tests across `tests/test_pipeline.py`,
+`tests/test_phase{2,3,4}.py`, and `tests/test_app.py`), and pushed. The
+dashboard runs with `streamlit run app/Home.py`. What's left is entirely
 about moving from "synthetic reference implementation" to "running
 against your real portfolio": plugging in real bureau/on-book/alt-data
 extracts, standing up the model risk committee process `GOVERNANCE.md`
